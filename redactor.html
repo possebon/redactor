@@ -1,0 +1,1445 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Local-only PII and secret redactor — sanitize text before sending it to LLMs.">
+<title>Redactor — local PII & secret sanitizer</title>
+<style>
+  /* ─── tokens ─────────────────────────────────────────────────────── */
+  :root {
+    --bg:           #07090f;
+    --bg-tint:      #0a0d15;
+    --surface:      #11151f;
+    --surface-2:    #161b28;
+    --surface-3:    #1d2433;
+    --line:         #1f2533;
+    --line-strong:  #2c3447;
+    --ink:          #e6ebf3;
+    --ink-muted:    #8590a8;
+    --ink-dim:      #5a6481;
+    --ink-faint:    #3a4257;
+    --accent:       #34d399;
+    --accent-dim:   #0a3d2e;
+    --accent-glow:  rgba(52, 211, 153, 0.14);
+    --warn:         #f59e0b;
+    --danger:       #ef4444;
+    --radius:       8px;
+    --radius-lg:    12px;
+    --mono:         ui-monospace, "SF Mono", "JetBrains Mono", "Menlo", "Consolas", monospace;
+    --sans:         -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Helvetica Neue", sans-serif;
+    --tight:        -0.011em;
+    --tighter:      -0.022em;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body { height: 100%; }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    letter-spacing: var(--tight);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+    /* subtle ambient glow */
+    background-image:
+      radial-gradient(ellipse 80% 50% at 15% 0%, rgba(52,211,153,0.05), transparent 60%),
+      radial-gradient(ellipse 60% 40% at 85% 100%, rgba(52,211,153,0.03), transparent 55%);
+    background-attachment: fixed;
+  }
+
+  /* very faint grain — adds depth */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.06 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    opacity: 0.4;
+    z-index: 1;
+  }
+
+  ::selection { background: var(--accent); color: #04130d; }
+
+  /* ─── layout shell ───────────────────────────────────────────────── */
+  .shell {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    position: relative;
+    z-index: 2;
+  }
+
+  /* ─── header ─────────────────────────────────────────────────────── */
+  header.app {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 28px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(255,255,255,0.012), transparent);
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .brand-mark {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, var(--accent), #059669 80%);
+    display: grid;
+    place-items: center;
+    color: #04130d;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.05) inset, 0 4px 14px rgba(52,211,153,0.25);
+  }
+  .brand-mark svg { width: 18px; height: 18px; }
+
+  .brand-name {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: var(--tighter);
+  }
+  .brand-name .sub {
+    color: var(--ink-dim);
+    font-weight: 400;
+    margin-left: 6px;
+    font-size: 13px;
+  }
+
+  .header-tools {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 12px 5px 10px;
+    background: rgba(52,211,153,0.08);
+    border: 1px solid rgba(52,211,153,0.22);
+    color: var(--accent);
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+  }
+  .pill::before {
+    content: "";
+    width: 6px; height: 6px;
+    background: var(--accent);
+    border-radius: 50%;
+    box-shadow: 0 0 8px var(--accent);
+    animation: pulse 2.4s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: 0.55; transform: scale(0.9); }
+  }
+
+  .icon-btn {
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--ink-muted);
+    padding: 7px 12px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    font-size: 12.5px;
+    font-family: inherit;
+    font-weight: 500;
+    transition: all 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .icon-btn:hover { color: var(--ink); border-color: var(--line-strong); background: var(--surface); }
+  .icon-btn svg { width: 14px; height: 14px; }
+
+  /* ─── tab bar ────────────────────────────────────────────────────── */
+  .tabbar {
+    display: flex;
+    align-items: center;
+    padding: 0 28px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-tint);
+  }
+
+  .tab {
+    background: transparent;
+    border: none;
+    color: var(--ink-dim);
+    padding: 14px 4px;
+    margin-right: 24px;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+    font-weight: 500;
+    letter-spacing: var(--tight);
+    border-bottom: 2px solid transparent;
+    transition: color 0.15s, border-color 0.15s;
+    position: relative;
+    top: 1px;
+  }
+  .tab:hover { color: var(--ink-muted); }
+  .tab.active {
+    color: var(--ink);
+    border-bottom-color: var(--accent);
+  }
+  .tab .badge {
+    margin-left: 7px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-dim);
+    background: var(--surface-2);
+    padding: 1px 6px;
+    border-radius: 4px;
+  }
+  .tab.active .badge { color: var(--accent); background: var(--accent-dim); }
+
+  /* ─── stats strip ─────────────────────────────────────────────────── */
+  .stats {
+    padding: 14px 28px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--line);
+    min-height: 56px;
+  }
+
+  .stat {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 11px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-size: 12px;
+    color: var(--ink-muted);
+    transition: border-color 0.15s;
+  }
+  .stat:hover { border-color: var(--line-strong); color: var(--ink); }
+  .stat .num {
+    font-family: var(--mono);
+    font-weight: 600;
+    color: var(--ink);
+    font-feature-settings: "tnum";
+  }
+  .stat .swatch {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  .stats-empty {
+    color: var(--ink-dim);
+    font-size: 12.5px;
+    font-style: italic;
+  }
+
+  /* ─── editor grid ─────────────────────────────────────────────────── */
+  .editor-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    padding: 16px 28px;
+    flex: 1;
+    min-height: 460px;
+  }
+  @media (max-width: 980px) {
+    .editor-grid { grid-template-columns: 1fr; }
+  }
+
+  .pane {
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    transition: border-color 0.25s, box-shadow 0.25s;
+    min-height: 420px;
+  }
+  .pane.output.active {
+    border-color: rgba(52,211,153,0.35);
+    box-shadow: 0 0 0 1px rgba(52,211,153,0.1), 0 12px 36px var(--accent-glow);
+  }
+
+  .pane-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 11px 14px 11px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-tint);
+  }
+
+  .pane-title {
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .pane-title::before {
+    content: "";
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--ink-faint);
+  }
+  .pane.output .pane-title::before {
+    background: var(--accent);
+    box-shadow: 0 0 6px var(--accent);
+  }
+
+  .pane-actions {
+    display: flex;
+    gap: 6px;
+  }
+
+  .btn {
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--ink-muted);
+    padding: 5px 11px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-family: inherit;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .btn:hover { color: var(--ink); border-color: var(--line-strong); background: var(--surface-2); }
+  .btn svg { width: 12px; height: 12px; }
+
+  .btn.primary {
+    background: var(--accent);
+    color: #04130d;
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+  .btn.primary:hover { background: #6ee7b7; border-color: #6ee7b7; }
+
+  textarea.editor {
+    flex: 1;
+    width: 100%;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.65;
+    padding: 16px 18px;
+    resize: none;
+    tab-size: 2;
+    font-feature-settings: "calt" 1, "liga" 1;
+  }
+  textarea.editor::placeholder {
+    color: var(--ink-faint);
+    font-style: italic;
+  }
+
+  /* highlighted output (read-only) */
+  .output-view {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 18px;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--ink);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .output-view:empty::before {
+    content: attr(data-placeholder);
+    color: var(--ink-faint);
+    font-style: italic;
+  }
+  .output-view .tok {
+    color: var(--accent);
+    background: var(--accent-dim);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 12px;
+  }
+
+  /* ─── settings drawer ─────────────────────────────────────────────── */
+  .scrim {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    backdrop-filter: blur(2px);
+    z-index: 90;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+  }
+  .scrim.open { opacity: 1; pointer-events: auto; }
+
+  .settings {
+    position: fixed;
+    top: 0; right: 0; bottom: 0;
+    width: 400px;
+    max-width: 100vw;
+    background: var(--surface);
+    border-left: 1px solid var(--line);
+    z-index: 100;
+    transform: translateX(100%);
+    transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+    display: flex;
+    flex-direction: column;
+    box-shadow: -16px 0 48px rgba(0,0,0,0.5);
+  }
+  .settings.open { transform: translateX(0); }
+
+  .settings-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 22px;
+    border-bottom: 1px solid var(--line);
+  }
+  .settings-head h2 {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: var(--tight);
+  }
+  .settings-head .close {
+    background: transparent;
+    border: none;
+    color: var(--ink-muted);
+    cursor: pointer;
+    padding: 4px;
+    line-height: 0;
+    border-radius: 4px;
+  }
+  .settings-head .close:hover { color: var(--ink); background: var(--surface-2); }
+
+  .settings-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 22px 30px;
+  }
+
+  .settings-actions {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+  .settings-actions .btn { flex: 1; justify-content: center; }
+
+  details.group {
+    margin-bottom: 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: var(--surface-2);
+  }
+  details.group[open] { border-color: var(--line-strong); }
+
+  details.group > summary {
+    padding: 11px 14px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ink);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    user-select: none;
+    list-style: none;
+  }
+  details.group > summary::-webkit-details-marker { display: none; }
+  details.group > summary::after {
+    content: "+";
+    color: var(--ink-dim);
+    font-weight: 400;
+    font-size: 16px;
+    transition: transform 0.2s;
+  }
+  details.group[open] > summary::after {
+    content: "−";
+  }
+
+  .group-meta {
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--ink-dim);
+    font-family: var(--mono);
+    margin-right: 10px;
+  }
+
+  .pattern-list {
+    padding: 4px 12px 10px;
+    border-top: 1px solid var(--line);
+    background: var(--surface);
+  }
+
+  label.pattern {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 8px 4px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--ink-muted);
+    transition: color 0.12s;
+    border-radius: 4px;
+  }
+  label.pattern:hover { color: var(--ink); }
+  label.pattern input[type="checkbox"] {
+    accent-color: var(--accent);
+    margin: 0;
+    cursor: pointer;
+  }
+  label.pattern .lbl { flex: 1; }
+  label.pattern .hits {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--accent);
+    font-weight: 600;
+    background: var(--accent-dim);
+    padding: 1px 6px;
+    border-radius: 4px;
+    min-width: 22px;
+    text-align: center;
+  }
+  label.pattern .hits.zero { color: var(--ink-faint); background: transparent; }
+
+  /* ─── mapping drawer ─────────────────────────────────────────────── */
+  .map-drawer {
+    border-top: 1px solid var(--line);
+    background: var(--bg-tint);
+  }
+
+  .drawer-toggle {
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: var(--ink-muted);
+    padding: 14px 28px;
+    text-align: left;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 500;
+    letter-spacing: var(--tight);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    transition: color 0.15s;
+  }
+  .drawer-toggle:hover { color: var(--ink); }
+  .drawer-toggle .arrow {
+    transition: transform 0.2s;
+    color: var(--ink-dim);
+  }
+  .drawer-toggle.open .arrow { transform: rotate(90deg); }
+  .drawer-toggle .count {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-dim);
+  }
+
+  .drawer-body {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .drawer-body.open {
+    max-height: 360px;
+    overflow-y: auto;
+  }
+
+  .map-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 12.5px;
+  }
+  .map-table thead th {
+    text-align: left;
+    padding: 8px 28px;
+    color: var(--ink-dim);
+    font-weight: 500;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    border-bottom: 1px solid var(--line);
+    position: sticky;
+    top: 0;
+    background: var(--bg-tint);
+    z-index: 1;
+  }
+  .map-table tbody td {
+    padding: 8px 28px;
+    border-bottom: 1px solid var(--line);
+    color: var(--ink);
+    vertical-align: top;
+    word-break: break-all;
+  }
+  .map-table tbody tr:last-child td { border-bottom: none; }
+  .map-table tbody tr:hover { background: rgba(255,255,255,0.015); }
+
+  .map-table .tk {
+    color: var(--accent);
+    font-weight: 600;
+    white-space: nowrap;
+    width: 1%;
+  }
+  .map-table .og { color: var(--ink-muted); }
+  .map-table .cat {
+    color: var(--ink-dim);
+    text-transform: lowercase;
+    font-size: 11px;
+    white-space: nowrap;
+    width: 1%;
+  }
+
+  .map-empty {
+    padding: 38px 28px;
+    text-align: center;
+    color: var(--ink-dim);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .map-empty strong { color: var(--ink-muted); display: block; margin-bottom: 4px; font-weight: 600; }
+
+  .map-actions {
+    display: flex;
+    gap: 6px;
+    padding: 10px 28px;
+    border-top: 1px solid var(--line);
+    background: var(--bg-tint);
+  }
+
+  /* ─── footer ─────────────────────────────────────────────────────── */
+  footer.app {
+    padding: 18px 28px 22px;
+    font-size: 11.5px;
+    color: var(--ink-dim);
+    text-align: center;
+    border-top: 1px solid var(--line);
+    line-height: 1.7;
+  }
+  footer.app strong { color: var(--ink-muted); font-weight: 600; }
+  footer.app kbd {
+    font-family: var(--mono);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 10.5px;
+    color: var(--ink-muted);
+  }
+
+  /* ─── toast ──────────────────────────────────────────────────────── */
+  .toast {
+    position: fixed;
+    bottom: 28px;
+    left: 50%;
+    transform: translateX(-50%) translateY(16px);
+    background: var(--surface-3);
+    border: 1px solid var(--accent);
+    color: var(--ink);
+    padding: 10px 18px;
+    border-radius: 999px;
+    font-size: 12.5px;
+    font-weight: 500;
+    opacity: 0;
+    transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+    pointer-events: none;
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(52,211,153,0.15);
+  }
+  .toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  .toast svg { width: 14px; height: 14px; color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- ─── header ─── -->
+  <header class="app">
+    <div class="brand">
+      <div class="brand-mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2 4 5v7c0 4.5 3.4 8.4 8 10 4.6-1.6 8-5.5 8-10V5l-8-3z"/>
+          <path d="M9 12l2 2 4-4"/>
+        </svg>
+      </div>
+      <div class="brand-name">Redactor<span class="sub">/ local sanitizer</span></div>
+    </div>
+    <div class="header-tools">
+      <span class="pill" title="No network requests are made by this page">100% local · no network</span>
+      <button class="icon-btn" id="btnSettings" title="Detection categories">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Patterns
+      </button>
+    </div>
+  </header>
+
+  <!-- ─── tabs ─── -->
+  <nav class="tabbar">
+    <button class="tab active" data-mode="redact">Redact <span class="badge">paste → sanitize</span></button>
+    <button class="tab" data-mode="restore">Restore <span class="badge">unmap LLM reply</span></button>
+  </nav>
+
+  <!-- ─── stats strip ─── -->
+  <div class="stats" id="stats">
+    <span class="stats-empty">No content yet — paste anything sensitive into the left pane.</span>
+  </div>
+
+  <!-- ─── editor panes ─── -->
+  <div class="editor-grid">
+    <section class="pane input-pane">
+      <div class="pane-head">
+        <div class="pane-title" id="leftTitle">Original</div>
+        <div class="pane-actions">
+          <button class="btn" id="btnSample">Sample</button>
+          <button class="btn" id="btnClear">Clear</button>
+        </div>
+      </div>
+      <textarea class="editor" id="input" spellcheck="false" autocomplete="off"
+        placeholder="Paste any text here — logs, queries, configs, emails, JSON…
+Detected sensitive items will be tokenized in the right pane."></textarea>
+    </section>
+
+    <section class="pane output">
+      <div class="pane-head">
+        <div class="pane-title" id="rightTitle">Sanitized</div>
+        <div class="pane-actions">
+          <button class="btn" id="btnCopy">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            Copy
+          </button>
+          <button class="btn primary" id="btnCopyAll">Copy all</button>
+        </div>
+      </div>
+      <div class="output-view" id="output" data-placeholder="Sanitized output appears here as you type…"></div>
+    </section>
+  </div>
+
+  <!-- ─── mapping drawer ─── -->
+  <section class="map-drawer">
+    <button class="drawer-toggle" id="drawerToggle">
+      <span class="arrow">›</span>
+      <span>Token map</span>
+      <span class="count" id="mapCount">0 entries</span>
+    </button>
+    <div class="drawer-body" id="drawerBody">
+      <div class="map-empty" id="mapEmpty">
+        <strong>No tokens yet</strong>
+        Paste something into the input pane and detected items will be listed here as <code>[CATEGORY_NNN] → original value</code>.
+      </div>
+      <table class="map-table" id="mapTable" hidden>
+        <thead>
+          <tr>
+            <th style="width: 1%;">Token</th>
+            <th>Original value</th>
+            <th style="width: 1%;">Category</th>
+          </tr>
+        </thead>
+        <tbody id="mapBody"></tbody>
+      </table>
+      <div class="map-actions" id="mapActions" hidden>
+        <button class="btn" id="btnExportMap">Export map (JSON)</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── footer ─── -->
+  <footer class="app">
+    <div><strong>Your text never leaves this tab.</strong> All detection runs in your browser via regex — no servers, no telemetry, no cookies.</div>
+    <div style="margin-top: 6px;">
+      Save the file (<kbd>Ctrl/⌘ + S</kbd>) and open it offline. Share with colleagues by sending the <code>.html</code> file directly.
+    </div>
+  </footer>
+
+</div>
+
+<!-- ─── settings drawer ─── -->
+<div class="scrim" id="scrim"></div>
+<aside class="settings" id="settings" aria-hidden="true">
+  <div class="settings-head">
+    <h2>Detection patterns</h2>
+    <button class="close" id="btnSettingsClose" aria-label="Close">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="settings-body">
+    <div class="settings-actions">
+      <button class="btn" id="btnSelectAll">Enable all</button>
+      <button class="btn" id="btnSelectDefault">Reset to defaults</button>
+      <button class="btn" id="btnSelectNone">Disable all</button>
+    </div>
+    <div id="patternGroups"></div>
+  </div>
+</aside>
+
+<div class="toast" id="toast">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+  <span id="toastText">Copied</span>
+</div>
+
+<script>
+/* ════════════════════════════════════════════════════════════════════
+   PATTERN LIBRARY — ordered most-specific → least-specific
+   ════════════════════════════════════════════════════════════════════ */
+
+// Helper: Luhn check for credit cards
+function luhn(s) {
+  const digits = s.replace(/\D/g, '');
+  if (digits.length < 13 || digits.length > 19) return false;
+  let sum = 0, alt = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let d = +digits[i];
+    if (alt) { d *= 2; if (d > 9) d -= 9; }
+    sum += d;
+    alt = !alt;
+  }
+  return sum % 10 === 0;
+}
+
+const GROUPS = [
+  { id: 'cred',      label: 'Credentials & secrets'        },
+  { id: 'net',       label: 'Network & infrastructure'     },
+  { id: 'pii_univ',  label: 'Personal — universal'         },
+  { id: 'pii_br',    label: 'Personal — Brazil 🇧🇷'         },
+  { id: 'pii_us',    label: 'Personal — United States 🇺🇸'  },
+  { id: 'pii_eu',    label: 'Personal — Europe / UK 🇪🇺'    },
+];
+
+const PATTERNS = [
+  // ───── Credentials & secrets ─────────────────────────────────────────
+  { id: 'PRIVKEY',   label: 'Private key block (PEM)',         group: 'cred', def: true,
+    regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----/g },
+
+  { id: 'SQLCONN',   label: 'SQL Server connection string',   group: 'cred', def: true,
+    regex: /(?:Server|Data Source)\s*=\s*[^;]+;\s*(?:[^;=]+\s*=\s*[^;]+;\s*){0,5}(?:Password|Pwd)\s*=\s*[^;\s"']+/gi },
+
+  { id: 'URLCONN',   label: 'DB URL conn string (postgres/mysql/mongo/redis…)', group: 'cred', def: true,
+    regex: /\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|rediss|amqp|amqps|mssql)(?::\/\/)[^\s'"<>`]+/gi },
+
+  { id: 'JWT',       label: 'JWT token',                      group: 'cred', def: true,
+    regex: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g },
+
+  { id: 'AWSKEY',    label: 'AWS access key ID',              group: 'cred', def: true,
+    regex: /\b(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASCA)[A-Z0-9]{16}\b/g },
+
+  { id: 'GHTOKEN',   label: 'GitHub token',                    group: 'cred', def: true,
+    regex: /\bgh[posur]_[A-Za-z0-9]{36,255}\b/g },
+
+  { id: 'SLACK',     label: 'Slack token',                     group: 'cred', def: true,
+    regex: /\bxox[abporsu]-[A-Za-z0-9-]{10,}\b/g },
+
+  { id: 'STRIPE',    label: 'Stripe secret/publishable key',   group: 'cred', def: true,
+    regex: /\b(?:sk|pk|rk)_(?:test|live)_[A-Za-z0-9]{20,}\b/g },
+
+  { id: 'GOOGAPI',   label: 'Google API key',                  group: 'cred', def: true,
+    regex: /\bAIza[0-9A-Za-z_-]{35}\b/g },
+
+  { id: 'SSHPUB',    label: 'SSH public key',                  group: 'cred', def: true,
+    regex: /\bssh-(?:rsa|ed25519|dss|ecdsa-sha2-nistp(?:256|384|521))\s+[A-Za-z0-9+/=]{40,}(?:\s+[^\s]+)?/g },
+
+  { id: 'BEARER',    label: 'Bearer/Authorization header',     group: 'cred', def: true,
+    regex: /\b(?:Bearer|Basic|Token)\s+[A-Za-z0-9._\-+/=]{12,}/g },
+
+  // password=value style — uses captured groups; replaces only the value
+  { id: 'SECRET_KV', label: 'Password / secret in key=value',  group: 'cred', def: true,
+    regex: /\b(password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret)(\s*[:=]\s*['"]?)([^\s'",;}\n)]+)/gi,
+    valueGroup: 3 },
+
+  // DB connection fields (libpq / JDBC / YAML / env-var style):
+  //   user=content_admin, dbname=ugcv2, host=db.example.com, USERNAME: 'svc'
+  // Same replacer mechanism as SECRET_KV — only the value is tokenized.
+  { id: 'DB_FIELD',  label: 'DB conn field (user / dbname / host…)', group: 'cred', def: true,
+    regex: /\b(database|dbname|db_name|db_user|db_host|db|user(?:name|id)?|uid|host(?:name)?|server|servername|data\s*source|schema|catalog|account)(\s*[:=]\s*['"]?)([^\s'",;}\n)]+)/gi,
+    valueGroup: 3 },
+
+  // ───── Network & infrastructure ──────────────────────────────────────
+  { id: 'URL',       label: 'HTTP/HTTPS URL',                  group: 'net',  def: true,
+    regex: /\bhttps?:\/\/[^\s'"<>`]+/g },
+
+  { id: 'IPV6',      label: 'IPv6 address',                    group: 'net',  def: true,
+    // Order matters — longest-matching alternatives must come first, otherwise
+    // a shorter alt (e.g. {1,6}:hex) wins and leaves the tail exposed.
+    regex: /\b(?:(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,4}(?::[0-9A-Fa-f]{1,4}){1,4}|(?:[0-9A-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,3}|(?:[0-9A-Fa-f]{1,4}:){1,6}(?::[0-9A-Fa-f]{1,4}){1,2}|(?:[0-9A-Fa-f]{1,4}:){1,7}:|::(?:[0-9A-Fa-f]{1,4}:){0,7}[0-9A-Fa-f]{1,4})\b/g },
+
+  { id: 'IPV4',      label: 'IPv4 address',                    group: 'net',  def: true,
+    regex: /\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b/g },
+
+  { id: 'MAC',       label: 'MAC address',                     group: 'net',  def: true,
+    regex: /\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b/g },
+
+  // EMAIL & SSHHOST must run BEFORE HOSTNAME, otherwise HOSTNAME swallows the
+  // domain part and leaves the local-part / username exposed.
+  { id: 'EMAIL',     label: 'Email address',                   group: 'pii_univ', def: true,
+    regex: /\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,24}\b/g },
+
+  { id: 'SSHHOST',   label: 'user@host (SSH-style)',           group: 'net',  def: true,
+    // Two cases: real user@hostname.tld, OR user@[TOKEN] (when the host was
+    // already tokenized by IPV4/IPV6 earlier in the pipeline).
+    regex: /\b[a-z_][a-z0-9_-]{0,30}@(?:(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z]{2,}\b|\[[A-Z0-9_]+_\d{3,}\])/g },
+
+  { id: 'HOSTNAME',  label: 'Hostname / FQDN',                 group: 'net',  def: true,
+    regex: /\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.){1,}(?:com|net|org|io|dev|app|co|ai|cloud|tech|info|biz|edu|gov|local|internal|lan|corp|host|site|page|pro|xyz|me|tv|br|us|uk|de|fr|es|pt|it|eu|jp|cn|in|ru|au|ca|mx|nl|se|no|fi|dk|pl|ch|at|be|ie|gr|cz|tr|il|sg|hk|tw|kr|nz|za|ar|cl|co|pe)\b/g },
+
+  { id: 'WINUSER',   label: 'Windows AD user (DOMAIN\\user)',    group: 'net',  def: true,
+    regex: /\b[A-Z][A-Z0-9_-]{1,15}\\[a-zA-Z][a-zA-Z0-9._$-]{0,30}/g },
+
+  { id: 'HOMEDIR',   label: 'Home directory path',             group: 'net',  def: true,
+    regex: /(?:\/home|\/Users|C:\\Users)[\\/][a-zA-Z][a-zA-Z0-9_.-]*/g },
+
+  // ───── Universal personal ────────────────────────────────────────────
+
+  { id: 'CC',        label: 'Credit card (Luhn-validated)',    group: 'pii_univ', def: true,
+    regex: /\b(?:\d[ -]?){13,19}\b/g, validator: luhn },
+
+  { id: 'IBAN',      label: 'IBAN',                            group: 'pii_univ', def: true,
+    regex: /\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]){11,30}\b/g },
+
+  { id: 'INTLPHONE', label: 'International phone (E.164-ish)', group: 'pii_univ', def: true,
+    regex: /\+\d{1,3}[\s.\-]?\(?\d{1,4}\)?[\s.\-]?\d{2,4}[\s.\-]?\d{2,4}(?:[\s.\-]?\d{2,4})?/g },
+
+  // ───── Brazil ────────────────────────────────────────────────────────
+  { id: 'CNPJ',      label: 'CNPJ',                            group: 'pii_br', def: true,
+    regex: /\b\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}\b/g },
+
+  { id: 'CPF',       label: 'CPF',                             group: 'pii_br', def: true,
+    regex: /\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/g },
+
+  { id: 'CEP',       label: 'CEP (BR postal code)',            group: 'pii_br', def: true,
+    regex: /\b\d{5}-\d{3}\b/g },
+
+  { id: 'PHONEBR',   label: 'Brazilian phone',                 group: 'pii_br', def: true,
+    regex: /\(\d{2}\)\s?9?\s?\d{4}-?\d{4}\b/g },
+
+  { id: 'PIS',       label: 'PIS / PASEP',                     group: 'pii_br', def: true,
+    regex: /\b\d{3}\.\d{5}\.\d{2}-\d\b/g },
+
+  { id: 'TITELEITOR',label: 'Título de Eleitor',                group: 'pii_br', def: false,
+    regex: /\b\d{4}\s?\d{4}\s?\d{4}\b/g },
+
+  // ───── United States ─────────────────────────────────────────────────
+  { id: 'SSN',       label: 'SSN (US)',                        group: 'pii_us', def: true,
+    regex: /\b(?!000|666|9\d\d)\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b/g },
+
+  { id: 'EIN',       label: 'EIN (US)',                        group: 'pii_us', def: true,
+    regex: /\b\d{2}-\d{7}\b/g },
+
+  { id: 'PHONEUS',   label: 'US phone',                        group: 'pii_us', def: true,
+    regex: /\(\d{3}\)\s?\d{3}-\d{4}|\b[2-9]\d{2}-\d{3}-\d{4}\b/g },
+
+  { id: 'ZIPUS',     label: 'US ZIP code',                     group: 'pii_us', def: false,
+    regex: /\b\d{5}(?:-\d{4})?\b/g },
+
+  // ───── Europe / UK ───────────────────────────────────────────────────
+  { id: 'UKNI',      label: 'UK National Insurance no.',       group: 'pii_eu', def: true,
+    regex: /\b[A-CEGHJ-PR-TW-Z]{2}\s?\d{2}\s?\d{2}\s?\d{2}\s?[A-D]\b/g },
+
+  { id: 'UKPOST',    label: 'UK postcode',                     group: 'pii_eu', def: true,
+    regex: /\b[A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2}\b/g },
+
+  { id: 'EUVAT',     label: 'EU VAT number',                   group: 'pii_eu', def: true,
+    regex: /\b(?:AT|BE|BG|HR|CY|CZ|DK|EE|FI|FR|DE|EL|HU|IE|IT|LV|LT|LU|MT|NL|PL|PT|RO|SK|SI|ES|SE)[A-Z0-9]{8,12}\b/g },
+
+  { id: 'ESDNI',     label: 'Spanish DNI / NIE',               group: 'pii_eu', def: true,
+    regex: /\b[XYZ]?\d{7,8}[A-HJ-NP-TV-Z]\b/g },
+
+  { id: 'ITCF',      label: 'Italian Codice Fiscale',          group: 'pii_eu', def: true,
+    regex: /\b[A-Z]{6}\d{2}[A-Z]\d{2}[A-Z]\d{3}[A-Z]\b/g },
+
+  { id: 'FRINSEE',   label: 'French INSEE / Sécu social',      group: 'pii_eu', def: true,
+    regex: /\b[12]\s?\d{2}\s?(?:0[1-9]|1[0-2])\s?\d{2}\s?\d{3}\s?\d{3}\s?\d{2}\b/g },
+
+  { id: 'PTNIF',     label: 'Portuguese NIF (9-digit)',        group: 'pii_eu', def: false,
+    regex: /\b[1-9]\d{8}\b/g },
+];
+
+/* ════════════════════════════════════════════════════════════════════
+   STATE
+   ════════════════════════════════════════════════════════════════════ */
+
+const enabled = new Set(PATTERNS.filter(p => p.def).map(p => p.id));
+let mapping = [];           // [{token, original, category}]
+let mapByOriginal = new Map();
+let counters = {};
+let currentMode = 'redact';
+
+/* ════════════════════════════════════════════════════════════════════
+   REDACTION CORE
+   ════════════════════════════════════════════════════════════════════ */
+
+function getToken(category, original) {
+  if (mapByOriginal.has(original)) return mapByOriginal.get(original);
+  counters[category] = (counters[category] || 0) + 1;
+  const num = String(counters[category]).padStart(3, '0');
+  const token = `[${category}_${num}]`;
+  mapByOriginal.set(original, token);
+  mapping.push({ token, original, category });
+  return token;
+}
+
+function resetMapping() {
+  mapping = [];
+  mapByOriginal = new Map();
+  counters = {};
+}
+
+function redact(text) {
+  resetMapping();
+  if (!text) return { output: '', perPattern: {} };
+
+  let work = text;
+  const perPattern = {};
+
+  for (const p of PATTERNS) {
+    if (!enabled.has(p.id)) continue;
+    let count = 0;
+
+    if (p.valueGroup) {
+      // replace only the captured value
+      work = work.replace(p.regex, (match, ...args) => {
+        // args = [g1, g2, ..., offset, fullString]
+        const value = args[p.valueGroup - 1];
+        // skip empties, already-tokenized values, shell vars ($X / ${X}),
+        // template references ({x}), and placeholders (<x>) — these aren't
+        // sensitive payload, just structural markers.
+        if (!value || /^[\[\$\{<]/.test(value)) return match;
+        if (p.validator && !p.validator(value)) return match;
+        const tok = getToken(p.id, value);
+        count++;
+        return match.replace(value, tok);
+      });
+    } else {
+      work = work.replace(p.regex, (match) => {
+        if (p.validator && !p.validator(match)) return match;
+        const tok = getToken(p.id, match);
+        count++;
+        return tok;
+      });
+    }
+
+    if (count > 0) perPattern[p.id] = count;
+  }
+
+  return { output: work, perPattern };
+}
+
+function restore(text) {
+  if (!text || mapping.length === 0) return text;
+  let result = text;
+  // longer tokens first to avoid partial-replacement ambiguity (e.g. _001 vs _0010)
+  const sorted = [...mapping].sort((a, b) => b.token.length - a.token.length);
+  for (const { token, original } of sorted) {
+    result = result.split(token).join(original);
+  }
+  return result;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   DOM
+   ════════════════════════════════════════════════════════════════════ */
+
+const $input        = document.getElementById('input');
+const $output       = document.getElementById('output');
+const $stats        = document.getElementById('stats');
+const $patternGroups= document.getElementById('patternGroups');
+const $mapBody      = document.getElementById('mapBody');
+const $mapTable     = document.getElementById('mapTable');
+const $mapEmpty     = document.getElementById('mapEmpty');
+const $mapActions   = document.getElementById('mapActions');
+const $mapCount     = document.getElementById('mapCount');
+const $outputPane   = document.querySelector('.pane.output');
+const $leftTitle    = document.getElementById('leftTitle');
+const $rightTitle   = document.getElementById('rightTitle');
+
+/* ─── settings drawer ─── */
+const $settings  = document.getElementById('settings');
+const $scrim     = document.getElementById('scrim');
+function openSettings() {
+  $settings.classList.add('open');
+  $scrim.classList.add('open');
+  $settings.setAttribute('aria-hidden', 'false');
+}
+function closeSettings() {
+  $settings.classList.remove('open');
+  $scrim.classList.remove('open');
+  $settings.setAttribute('aria-hidden', 'true');
+}
+document.getElementById('btnSettings').onclick = openSettings;
+document.getElementById('btnSettingsClose').onclick = closeSettings;
+$scrim.onclick = closeSettings;
+
+/* ─── render pattern toggles ─── */
+function renderPatternUI() {
+  $patternGroups.innerHTML = '';
+  for (const g of GROUPS) {
+    const groupPatterns = PATTERNS.filter(p => p.group === g.id);
+    const enabledCount  = groupPatterns.filter(p => enabled.has(p.id)).length;
+
+    const details = document.createElement('details');
+    details.className = 'group';
+    details.open = true;
+    details.innerHTML = `
+      <summary>
+        <span>${g.label}</span>
+        <span><span class="group-meta">${enabledCount}/${groupPatterns.length}</span><span></span></span>
+      </summary>
+      <div class="pattern-list"></div>
+    `;
+    const list = details.querySelector('.pattern-list');
+    for (const p of groupPatterns) {
+      const lab = document.createElement('label');
+      lab.className = 'pattern';
+      lab.innerHTML = `
+        <input type="checkbox" ${enabled.has(p.id) ? 'checked' : ''} data-pid="${p.id}">
+        <span class="lbl">${p.label}</span>
+        <span class="hits zero" data-hits="${p.id}">0</span>
+      `;
+      list.appendChild(lab);
+    }
+    $patternGroups.appendChild(details);
+  }
+}
+renderPatternUI();
+
+$patternGroups.addEventListener('change', (e) => {
+  if (e.target.matches('input[data-pid]')) {
+    const pid = e.target.dataset.pid;
+    if (e.target.checked) enabled.add(pid); else enabled.delete(pid);
+    process();
+    // Update group counts in summaries
+    for (const g of GROUPS) {
+      const summary = $patternGroups.querySelector(`details:nth-of-type(${GROUPS.indexOf(g)+1}) .group-meta`);
+      if (!summary) continue;
+      const total = PATTERNS.filter(p => p.group === g.id).length;
+      const en = PATTERNS.filter(p => p.group === g.id && enabled.has(p.id)).length;
+      summary.textContent = `${en}/${total}`;
+    }
+  }
+});
+
+document.getElementById('btnSelectAll').onclick = () => {
+  PATTERNS.forEach(p => enabled.add(p.id));
+  renderPatternUI();
+  process();
+};
+document.getElementById('btnSelectNone').onclick = () => {
+  enabled.clear();
+  renderPatternUI();
+  process();
+};
+document.getElementById('btnSelectDefault').onclick = () => {
+  enabled.clear();
+  PATTERNS.filter(p => p.def).forEach(p => enabled.add(p.id));
+  renderPatternUI();
+  process();
+};
+
+/* ─── tabs ─── */
+document.querySelectorAll('.tab').forEach(t => {
+  t.onclick = () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    currentMode = t.dataset.mode;
+    if (currentMode === 'redact') {
+      $leftTitle.textContent = 'Original';
+      $rightTitle.textContent = 'Sanitized';
+      $input.placeholder = 'Paste any text here — logs, queries, configs, emails, JSON…\nDetected sensitive items will be tokenized in the right pane.';
+      $output.dataset.placeholder = 'Sanitized output appears here as you type…';
+    } else {
+      $leftTitle.textContent = 'LLM reply (with tokens)';
+      $rightTitle.textContent = 'Restored';
+      $input.placeholder = 'Paste the LLM response here. Any tokens like [EMAIL_001] from a prior redaction will be replaced with the original values.';
+      $output.dataset.placeholder = 'Restored output appears here…';
+    }
+    process();
+  };
+});
+
+/* ─── output rendering with token highlighting ─── */
+function renderOutput(text, isRestore) {
+  if (!text) {
+    $output.innerHTML = '';
+    return;
+  }
+  if (isRestore) {
+    // Plain rendering — no highlight, this is the original
+    $output.textContent = text;
+    return;
+  }
+  // Highlight tokens in the sanitized output
+  const tokenRegex = /\[[A-Z_]+_\d{3,}\]/g;
+  let html = '';
+  let last = 0;
+  let m;
+  const escape = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  while ((m = tokenRegex.exec(text)) !== null) {
+    html += escape(text.slice(last, m.index));
+    html += '<span class="tok">' + escape(m[0]) + '</span>';
+    last = m.index + m[0].length;
+  }
+  html += escape(text.slice(last));
+  $output.innerHTML = html;
+}
+
+/* ─── stats rendering ─── */
+function renderStats(perPattern, totalChars) {
+  const total = Object.values(perPattern).reduce((a, b) => a + b, 0);
+  if (total === 0) {
+    $stats.innerHTML = totalChars === 0
+      ? '<span class="stats-empty">No content yet — paste anything sensitive into the left pane.</span>'
+      : '<span class="stats-empty">Nothing matched. Try the Sample button or enable more pattern categories.</span>';
+    return;
+  }
+  $stats.innerHTML = '';
+  const summary = document.createElement('span');
+  summary.className = 'stat';
+  summary.innerHTML = `<span class="swatch"></span><span class="num">${total}</span> redacted</span>`;
+  $stats.appendChild(summary);
+
+  const byCount = Object.entries(perPattern).sort((a, b) => b[1] - a[1]);
+  for (const [pid, n] of byCount) {
+    const p = PATTERNS.find(x => x.id === pid);
+    if (!p) continue;
+    const chip = document.createElement('span');
+    chip.className = 'stat';
+    chip.innerHTML = `<span class="num">${n}</span> ${p.label}`;
+    $stats.appendChild(chip);
+  }
+}
+
+/* ─── per-pattern hit counts in the settings drawer ─── */
+function renderHits(perPattern) {
+  document.querySelectorAll('[data-hits]').forEach(el => {
+    const n = perPattern[el.dataset.hits] || 0;
+    el.textContent = n;
+    el.classList.toggle('zero', n === 0);
+  });
+}
+
+/* ─── mapping table ─── */
+function renderMap() {
+  if (mapping.length === 0) {
+    $mapEmpty.style.display = '';
+    $mapTable.hidden = true;
+    $mapActions.hidden = true;
+    $mapCount.textContent = '0 entries';
+    return;
+  }
+  $mapEmpty.style.display = 'none';
+  $mapTable.hidden = false;
+  $mapActions.hidden = false;
+  $mapCount.textContent = `${mapping.length} ${mapping.length === 1 ? 'entry' : 'entries'}`;
+  $mapBody.innerHTML = mapping.map(m => `
+    <tr>
+      <td class="tk">${m.token}</td>
+      <td class="og">${escapeHtml(m.original)}</td>
+      <td class="cat">${m.category.toLowerCase()}</td>
+    </tr>
+  `).join('');
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/* ─── main process ─── */
+function process() {
+  const text = $input.value;
+  if (currentMode === 'redact') {
+    const { output, perPattern } = redact(text);
+    renderOutput(output, false);
+    renderStats(perPattern, text.length);
+    renderHits(perPattern);
+    renderMap();
+    $outputPane.classList.toggle('active', mapping.length > 0);
+  } else {
+    const restored = restore(text);
+    renderOutput(restored, true);
+    // Stats: show tokens detected vs unmapped
+    const tokensInText = (text.match(/\[[A-Z_]+_\d{3,}\]/g) || []);
+    const unique = new Set(tokensInText);
+    const matched = [...unique].filter(t => mapping.some(m => m.token === t));
+    if (unique.size === 0) {
+      $stats.innerHTML = text.length === 0
+        ? '<span class="stats-empty">Paste an LLM response containing tokens like [EMAIL_001] to restore.</span>'
+        : '<span class="stats-empty">No tokens detected in this text.</span>';
+    } else {
+      $stats.innerHTML = `
+        <span class="stat"><span class="swatch"></span><span class="num">${matched.length}</span> tokens restored</span>
+        <span class="stat"><span class="num">${unique.size - matched.length}</span> unknown tokens</span>
+      `;
+    }
+    $outputPane.classList.toggle('active', matched.length > 0);
+  }
+}
+
+/* ─── input listeners ─── */
+let processTimer;
+$input.addEventListener('input', () => {
+  clearTimeout(processTimer);
+  processTimer = setTimeout(process, 60);
+});
+
+/* ─── buttons ─── */
+document.getElementById('btnClear').onclick = () => {
+  $input.value = '';
+  process();
+  $input.focus();
+};
+
+document.getElementById('btnSample').onclick = () => {
+  $input.value = SAMPLE;
+  process();
+};
+
+function copyText(text) {
+  if (!text) { toast('Nothing to copy'); return; }
+  navigator.clipboard.writeText(text).then(
+    () => toast('Copied to clipboard'),
+    () => toast('Copy failed — select and Ctrl+C')
+  );
+}
+
+document.getElementById('btnCopy').onclick    = () => copyText($output.innerText || '');
+document.getElementById('btnCopyAll').onclick = () => copyText($output.innerText || '');
+
+/* ─── mapping drawer ─── */
+const $drawerToggle = document.getElementById('drawerToggle');
+const $drawerBody   = document.getElementById('drawerBody');
+$drawerToggle.onclick = () => {
+  const open = $drawerToggle.classList.toggle('open');
+  $drawerBody.classList.toggle('open', open);
+};
+
+document.getElementById('btnExportMap').onclick = () => {
+  const blob = new Blob([JSON.stringify(mapping, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `redactor-map-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  toast('Map exported');
+};
+
+/* ─── toast ─── */
+const $toast = document.getElementById('toast');
+const $toastText = document.getElementById('toastText');
+let toastTimer;
+function toast(msg) {
+  $toastText.textContent = msg;
+  $toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => $toast.classList.remove('show'), 1800);
+}
+
+/* ─── keyboard shortcuts ─── */
+document.addEventListener('keydown', (e) => {
+  // Cmd/Ctrl+Shift+C → copy output
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'c') {
+    e.preventDefault();
+    copyText($output.innerText || '');
+  }
+  // Esc closes settings
+  if (e.key === 'Escape' && $settings.classList.contains('open')) {
+    closeSettings();
+  }
+});
+
+/* ════════════════════════════════════════════════════════════════════
+   SAMPLE — covers patterns from BR / US / EU plus credentials & infra
+   ════════════════════════════════════════════════════════════════════ */
+const SAMPLE = `── BAZ Production Incident — Slack export ──────────────────
+
+[10:42] fernando.possebon@projectiva.com.br
+SQL Server Always On replica db-prod-01.kennis.local (172.16.34.118) is failing 
+over again. Listener IP 10.0.50.10 is unreachable from baz-app-02.
+
+DOMAIN\\svc_bazapp can't authenticate. Connection string in /home/fpossebon/.env:
+  Server=baz-prod-sql-01.kennis.local;Database=BAZContabilidade;User Id=baz_app;Password=Tr0ub4dor&3!
+  postgres://manu:Sup3rS3cret@10.0.51.7:5432/baz_memory?sslmode=require
+
+[10:44] sarah.collins@kennis.io
+Pulling logs from k8s pod ip 2001:db8:85a3::8a2e:370:7334. 
+Box has MAC 00:1B:44:11:3A:B7 — confirmed. SSH'd as ubuntu@52.14.220.18.
+
+[10:45] AWS RDS quick check:
+  export RDSHOST="db-prod.cluster-cabc123xyz.us-east-1.rds.amazonaws.com"
+  psql "host=$RDSHOST port=5432 dbname=ugcv2 user=content_admin sslmode=verify-full"
+
+[10:46] Customer ticket #4421 — Maria Silva
+  CPF: 123.456.789-09
+  CNPJ (BAZ): 11.222.333/0001-81
+  CEP: 90619-900  Phone: (51) 99812-3456
+  PIS: 120.94567.89-1
+  Card on file: 4111 1111 1111 1111 (Luhn-valid Visa)
+
+[10:48] US client — John Smith
+  SSN 123-45-6789, EIN 12-3456789
+  Phone (415) 555-0142, ZIP 94103-1234
+
+[10:51] EU clients
+  UK NI: AB 12 34 56 C    UK postcode: SW1A 1AA
+  ES DNI: 12345678Z
+  IT Codice: RSSMRA85T10A562S
+  FR INSEE: 1 85 05 78 006 084 36
+  PT NIF: 219999990
+  IBAN: GB82 WEST 1234 5698 7654 32
+  EU VAT: DE123456789
+
+[10:55] Tokens flying around:
+  GitHub:  ghp_aB3cD4eF5gH6iJ7kL8mN9oP0qR1sT2uV3wX4
+  AWS:     AKIAIOSFODNN7EXAMPLE
+  Google:  AIzaSyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY
+  JWT:     eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkZlcm5hbmRvIn0.dyt0CoTl4WoVjAHI9Q_CwSKhl6d_9rhM3NrXuJttkao
+  Bearer:  Authorization: Bearer ZGVtby10b2tlbi1iYXplZmZmZmYzMjE0MQ
+  apikey = "sk_test_FAKE_DO_NOT_USE_demo1234567890"
+
+-----BEGIN RSA PRIVATE KEY-----
+MIIEowIBAAKCAQEAvmK3p4LHzzHkn9+FAKE+EXAMPLE+KEY+ONLY+FOR+DEMO==
+-----END RSA PRIVATE KEY-----
+
+Please review and let me know what to send to the LLM safely.`;
+
+/* initial render */
+process();
+</script>
+</body>
+</html>
