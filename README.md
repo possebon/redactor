@@ -22,7 +22,7 @@ That's it. The first byte of network traffic this page generates is whatever you
 
 ## Features
 
-- **42 detection patterns** across credentials, network identifiers, and PII for Brazil, US, and Europe/UK — plus universal patterns (email, credit card, IBAN, E.164 phone).
+- **60 detection patterns** across credentials, network identifiers, and PII for Brazil, Latin America, US, and Europe/UK — plus universal patterns (email, credit card, IBAN, E.164 phone).
 - **Reversible.** Every redaction is recorded in an in-memory map. Use **Restore** to reverse the process — paste the LLM reply with tokens, get the original values back.
 - **Stable tokens.** The same value always gets the same token within a session, so the LLM can reason about "the user" or "the database" coherently across the document.
 - **Per-pattern toggles.** Turn off categories you don't need (e.g. disable EU patterns when working with Brazilian-only data).
@@ -33,12 +33,15 @@ That's it. The first byte of network traffic this page generates is whatever you
 
 | Group | Patterns |
 | --- | --- |
-| **Credentials & secrets** | PEM private keys, JWTs, AWS access keys, GitHub / Slack / Stripe / Google API tokens, Bearer / Basic auth headers, SSH public keys, SQL Server & libpq / JDBC URL connection strings, `password=…` / `secret=…` / `apikey=…` assignments, **DB connection fields** (`user=`, `dbname=`, `host=`, `database=`, `schema=`, `account=`, …) |
+| **Credentials & secrets** | PEM private keys, JWTs, AWS access keys, GitHub / Slack / Stripe / Google API tokens, **Anthropic & OpenAI API keys**, **Twilio / SendGrid / Mailgun / npm / GitLab / Atlassian / DigitalOcean / Heroku / GCP OAuth tokens**, **Slack & Discord webhook URLs**, Bearer / Basic auth headers, SSH public keys, SQL Server & libpq / JDBC URL connection strings (`jdbc:postgresql://…`, `oracle:thin:@…`, ClickHouse, Cassandra), **WebSocket URIs (`wss://`)**, `password=…` / `secret=…` / `apikey=…` assignments, DB connection fields (`user=`, `dbname=`, `host=`, `database=`, `schema=`, `account=`, …) |
 | **Network & infrastructure** | HTTPS URLs, IPv4 & IPv6, MAC addresses, FQDN / hostnames, Windows AD `DOMAIN\user`, `/home/x` & `/Users/x` & `C:\Users\x` paths, `user@host` SSH-style |
 | **Personal — universal** | Email addresses, credit cards (Luhn-validated), IBAN, E.164 international phone |
-| **Personal — Brazil 🇧🇷** | CPF, CNPJ, CEP, Brazilian phone, PIS / PASEP, Título de Eleitor *(off by default)* |
+| **Personal — Brazil 🇧🇷** | CPF *(checksum-validated)*, CNPJ *(checksum-validated)*, CEP, Brazilian phone, PIS / PASEP, Título de Eleitor *(off by default)* |
+| **Personal — Latin America 🌎** | CUIT / CUIL (Argentina, mod-11), CURP (Mexico), RFC (Mexico), RUT (Chile, mod-11) |
 | **Personal — United States 🇺🇸** | SSN, EIN, US phone, ZIP code *(off by default)* |
 | **Personal — Europe / UK 🇪🇺** | UK National Insurance number, UK postcode, EU VAT, Spanish DNI / NIE, Italian Codice Fiscale, French INSEE / Sécu social, Portuguese NIF *(off by default)* |
+
+Well-known reserved values (loopback `127.0.0.1` / `::1`, RFC 5737 documentation IP ranges `192.0.2.0/24` / `198.51.100.0/24` / `203.0.113.0/24`, broadcast `255.255.255.255`, all-zero MAC, RFC 2606 `example.com` / `*.test` / `*.local`) are deliberately *not* tokenized — they're documentation placeholders, not real data.
 
 Patterns marked *off by default* are high-false-positive on bare digit strings (a 9-digit number isn't necessarily a Portuguese NIF). Enable them per session via the **Patterns** drawer when you're working with that data.
 

@@ -834,13 +834,83 @@ function luhn(s) {
   return sum % 10 === 0;
 }
 
+// Helper: CPF check digits (Brazilian individual taxpayer ID)
+function cpf(s) {
+  const d = s.replace(/\D/g, '');
+  if (d.length !== 11 || /^(\d)\1+$/.test(d)) return false;
+  let sum = 0;
+  for (let i = 0; i < 9; i++) sum += +d[i] * (10 - i);
+  let r = (sum * 10) % 11; if (r === 10) r = 0;
+  if (r !== +d[9]) return false;
+  sum = 0;
+  for (let i = 0; i < 10; i++) sum += +d[i] * (11 - i);
+  r = (sum * 10) % 11; if (r === 10) r = 0;
+  return r === +d[10];
+}
+
+// Helper: CNPJ check digits (Brazilian company taxpayer ID)
+function cnpj(s) {
+  const d = s.replace(/\D/g, '');
+  if (d.length !== 14 || /^(\d)\1+$/.test(d)) return false;
+  const w1 = [5,4,3,2,9,8,7,6,5,4,3,2];
+  const w2 = [6,5,4,3,2,9,8,7,6,5,4,3,2];
+  let s1 = 0; for (let i = 0; i < 12; i++) s1 += +d[i] * w1[i];
+  let r1 = s1 % 11; r1 = r1 < 2 ? 0 : 11 - r1;
+  if (r1 !== +d[12]) return false;
+  let s2 = 0; for (let i = 0; i < 13; i++) s2 += +d[i] * w2[i];
+  let r2 = s2 % 11; r2 = r2 < 2 ? 0 : 11 - r2;
+  return r2 === +d[13];
+}
+
+// Helper: Chilean RUT mod-11 check digit
+function rutCl(s) {
+  const m = s.replace(/\./g, '').match(/^(\d{1,8})-([\dKk])$/);
+  if (!m) return false;
+  const num = m[1], dv = m[2].toUpperCase();
+  let sum = 0, mult = 2;
+  for (let i = num.length - 1; i >= 0; i--) {
+    sum += +num[i] * mult;
+    mult = mult === 7 ? 2 : mult + 1;
+  }
+  const r = 11 - (sum % 11);
+  const expected = r === 11 ? '0' : r === 10 ? 'K' : String(r);
+  return expected === dv;
+}
+
+// Helper: CUIT/CUIL mod-11 check digit (Argentina)
+function cuitAr(s) {
+  const d = s.replace(/\D/g, '');
+  if (d.length !== 11) return false;
+  const w = [5,4,3,2,7,6,5,4,3,2];
+  let sum = 0;
+  for (let i = 0; i < 10; i++) sum += +d[i] * w[i];
+  let r = 11 - (sum % 11);
+  if (r === 11) r = 0; else if (r === 10) return false;
+  return r === +d[10];
+}
+
+// Helper: skip well-known reserved / documentation values that aren't real secrets.
+// RFC 5737 (TEST-NET-1/2/3), loopback, broadcast, all-zero MAC, RFC 2606 example.* domains.
+const RESERVED_LITERAL = new Set([
+  '127.0.0.1', '0.0.0.0', '255.255.255.255',
+  '::1', '::', '::ffff:127.0.0.1',
+  '00:00:00:00:00:00', 'FF:FF:FF:FF:FF:FF', 'ff:ff:ff:ff:ff:ff',
+  'example.com', 'example.org', 'example.net',
+  'localhost.localdomain',
+]);
+const RESERVED_REGEX = /^(?:192\.0\.2\.|198\.51\.100\.|203\.0\.113\.)\d{1,3}$|^(?:[^.]+\.)?(?:test|invalid|localhost|local)$/i;
+function isReserved(value) {
+  return RESERVED_LITERAL.has(value) || RESERVED_REGEX.test(value);
+}
+
 const GROUPS = [
-  { id: 'cred',      label: 'Credentials & secrets'        },
-  { id: 'net',       label: 'Network & infrastructure'     },
-  { id: 'pii_univ',  label: 'Personal — universal'         },
-  { id: 'pii_br',    label: 'Personal — Brazil 🇧🇷'         },
-  { id: 'pii_us',    label: 'Personal — United States 🇺🇸'  },
-  { id: 'pii_eu',    label: 'Personal — Europe / UK 🇪🇺'    },
+  { id: 'cred',       label: 'Credentials & secrets'         },
+  { id: 'net',        label: 'Network & infrastructure'      },
+  { id: 'pii_univ',   label: 'Personal — universal'          },
+  { id: 'pii_br',     label: 'Personal — Brazil 🇧🇷'          },
+  { id: 'pii_latam',  label: 'Personal — Latin America 🌎'    },
+  { id: 'pii_us',     label: 'Personal — United States 🇺🇸'   },
+  { id: 'pii_eu',     label: 'Personal — Europe / UK 🇪🇺'     },
 ];
 
 const PATTERNS = [
@@ -848,11 +918,31 @@ const PATTERNS = [
   { id: 'PRIVKEY',   label: 'Private key block (PEM)',         group: 'cred', def: true,
     regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----/g },
 
+  // Vendor-specific webhook URLs MUST come before the generic URL pattern,
+  // otherwise URL would tokenize the whole thing as [URL_NNN] and the secret
+  // path component would be lost in a bucket alongside non-sensitive URLs.
+  { id: 'SLACKHOOK', label: 'Slack webhook URL',                group: 'cred', def: true,
+    regex: /\bhttps:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/[A-Za-z0-9]+\b/g },
+
+  { id: 'DISCHOOK',  label: 'Discord webhook URL',              group: 'cred', def: true,
+    regex: /\bhttps:\/\/(?:discord(?:app)?\.com|ptb\.discord\.com|canary\.discord\.com)\/api\/webhooks\/\d+\/[A-Za-z0-9_-]{40,}\b/g },
+
+  // Anthropic (sk-ant-…) MUST come before generic OpenAI (sk-…) — both share
+  // the sk- prefix and a less specific match would swallow the rest.
+  { id: 'ANTHROPIC', label: 'Anthropic API key',                group: 'cred', def: true,
+    regex: /\bsk-ant-(?:api|admin)\d{2,}-[A-Za-z0-9_-]{40,}\b/g },
+
+  { id: 'OPENAI',    label: 'OpenAI API key',                   group: 'cred', def: true,
+    regex: /\bsk-(?:proj|svcacct|admin)?-?[A-Za-z0-9_-]{40,}\b/g },
+
   { id: 'SQLCONN',   label: 'SQL Server connection string',   group: 'cred', def: true,
     regex: /(?:Server|Data Source)\s*=\s*[^;]+;\s*(?:[^;=]+\s*=\s*[^;]+;\s*){0,5}(?:Password|Pwd)\s*=\s*[^;\s"']+/gi },
 
   { id: 'URLCONN',   label: 'DB URL conn string (postgres/mysql/mongo/redis…)', group: 'cred', def: true,
-    regex: /\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|rediss|amqp|amqps|mssql)(?::\/\/)[^\s'"<>`]+/gi },
+    regex: /\b(?:jdbc:)?(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|rediss|amqp|amqps|mssql|sqlserver|oracle|cassandra|clickhouse)(?::\/\/|:thin:@)[^\s'"<>`]+/gi },
+
+  { id: 'WSURL',     label: 'WebSocket URI (ws:// / wss://)',  group: 'cred', def: true,
+    regex: /\bwss?:\/\/[^\s'"<>`]+/gi },
 
   { id: 'JWT',       label: 'JWT token',                      group: 'cred', def: true,
     regex: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g },
@@ -868,6 +958,34 @@ const PATTERNS = [
 
   { id: 'STRIPE',    label: 'Stripe secret/publishable key',   group: 'cred', def: true,
     regex: /\b(?:sk|pk|rk)_(?:test|live)_[A-Za-z0-9]{20,}\b/g },
+
+  { id: 'TWILIO',    label: 'Twilio account/key SID',           group: 'cred', def: true,
+    regex: /\b(?:AC|SK|SM|MM|CA|RE|FN|IS|FL|PN|MG)[a-f0-9]{32}\b/g },
+
+  { id: 'SENDGRID',  label: 'SendGrid API key',                 group: 'cred', def: true,
+    regex: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/g },
+
+  { id: 'MAILGUN',   label: 'Mailgun API key',                  group: 'cred', def: true,
+    regex: /\bkey-[a-f0-9]{32}\b/g },
+
+  { id: 'NPMTOKEN',  label: 'npm token',                        group: 'cred', def: true,
+    regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
+
+  { id: 'GLPAT',     label: 'GitLab personal access token',     group: 'cred', def: true,
+    regex: /\bglpat-[A-Za-z0-9_-]{20}\b/g },
+
+  { id: 'ATLASSIAN', label: 'Atlassian (Jira/Confluence) token',group: 'cred', def: true,
+    regex: /\bATATT[A-Za-z0-9_+/=-]{180,}\b/g },
+
+  { id: 'DOTOKEN',   label: 'DigitalOcean PAT',                 group: 'cred', def: true,
+    regex: /\bdop_v1_[a-f0-9]{64}\b/g },
+
+  { id: 'HEROKU',    label: 'Heroku API key',                   group: 'cred', def: true,
+    regex: /\bHRKU-[A-Za-z0-9_-]{36}\b/g },
+
+  // Google Cloud OAuth access tokens (ya29.…) and refresh tokens (1//0…).
+  { id: 'GCPOAUTH',  label: 'GCP OAuth access token',           group: 'cred', def: true,
+    regex: /\bya29\.[A-Za-z0-9_-]{30,}\b/g },
 
   { id: 'GOOGAPI',   label: 'Google API key',                  group: 'cred', def: true,
     regex: /\bAIza[0-9A-Za-z_-]{35}\b/g },
@@ -937,10 +1055,10 @@ const PATTERNS = [
 
   // ───── Brazil ────────────────────────────────────────────────────────
   { id: 'CNPJ',      label: 'CNPJ',                            group: 'pii_br', def: true,
-    regex: /\b\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}\b/g },
+    regex: /\b\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}\b/g, validator: cnpj },
 
   { id: 'CPF',       label: 'CPF',                             group: 'pii_br', def: true,
-    regex: /\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/g },
+    regex: /\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/g, validator: cpf },
 
   { id: 'CEP',       label: 'CEP (BR postal code)',            group: 'pii_br', def: true,
     regex: /\b\d{5}-\d{3}\b/g },
@@ -953,6 +1071,23 @@ const PATTERNS = [
 
   { id: 'TITELEITOR',label: 'Título de Eleitor',                group: 'pii_br', def: false,
     regex: /\b\d{4}\s?\d{4}\s?\d{4}\b/g },
+
+  // ───── Latin America (excluding Brazil) ──────────────────────────────
+  // Argentine CUIT/CUIL — 11 digits with mod-11 check digit. Format: XX-XXXXXXXX-X.
+  { id: 'CUIT_AR',   label: 'CUIT / CUIL (Argentina)',          group: 'pii_latam', def: true,
+    regex: /\b(?:20|23|24|25|26|27|30|33|34)-?\d{8}-?\d\b/g, validator: cuitAr },
+
+  // Mexican CURP — 18 chars: 4 letters + 6 digits (DOB) + H/M + 5 letters + alnum + digit.
+  { id: 'CURP_MX',   label: 'CURP (Mexico)',                    group: 'pii_latam', def: true,
+    regex: /\b[A-Z][AEIOUX][A-Z]{2}\d{6}[HM][A-Z]{5}[A-Z0-9]\d\b/g },
+
+  // Mexican RFC (taxpayer ID) — 12 chars (companies) or 13 chars (individuals).
+  { id: 'RFC_MX',    label: 'RFC (Mexico)',                     group: 'pii_latam', def: true,
+    regex: /\b[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}\b/g },
+
+  // Chilean RUT — 7–8 digits + check digit (0-9 or K). Mod-11 validated.
+  { id: 'RUT_CL',    label: 'RUT (Chile)',                      group: 'pii_latam', def: true,
+    regex: /\b\d{1,2}\.?\d{3}\.?\d{3}-[\dKk]\b/g, validator: rutCl },
 
   // ───── United States ─────────────────────────────────────────────────
   { id: 'SSN',       label: 'SSN (US)',                        group: 'pii_us', def: true,
@@ -1040,6 +1175,7 @@ function redact(text) {
         // template references ({x}), and placeholders (<x>) — these aren't
         // sensitive payload, just structural markers.
         if (!value || /^[\[\$\{<]/.test(value)) return match;
+        if (isReserved(value)) return match;
         if (p.validator && !p.validator(value)) return match;
         const tok = getToken(p.id, value);
         count++;
@@ -1047,6 +1183,7 @@ function redact(text) {
       });
     } else {
       work = work.replace(p.regex, (match) => {
+        if (isReserved(match)) return match;
         if (p.validator && !p.validator(match)) return match;
         const tok = getToken(p.id, match);
         count++;
@@ -1415,6 +1552,11 @@ Box has MAC 00:1B:44:11:3A:B7 — confirmed. SSH'd as ubuntu@52.14.220.18.
   SSN 123-45-6789, EIN 12-3456789
   Phone (415) 555-0142, ZIP 94103-1234
 
+[10:50] LatAm desk
+  AR CUIT: 30-50000000-3
+  MX CURP: GOMC850521HDFRRR05    MX RFC: GOMC850521JK4
+  CL RUT:  12.345.678-5
+
 [10:51] EU clients
   UK NI: AB 12 34 56 C    UK postcode: SW1A 1AA
   ES DNI: 12345678Z
@@ -1425,11 +1567,14 @@ Box has MAC 00:1B:44:11:3A:B7 — confirmed. SSH'd as ubuntu@52.14.220.18.
   EU VAT: DE123456789
 
 [10:55] Tokens flying around:
-  GitHub:  ghp_aB3cD4eF5gH6iJ7kL8mN9oP0qR1sT2uV3wX4
-  AWS:     AKIAIOSFODNN7EXAMPLE
-  Google:  AIzaSyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY
-  JWT:     eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkZlcm5hbmRvIn0.dyt0CoTl4WoVjAHI9Q_CwSKhl6d_9rhM3NrXuJttkao
-  Bearer:  Authorization: Bearer ZGVtby10b2tlbi1iYXplZmZmZmYzMjE0MQ
+  GitHub:    ghp_aB3cD4eF5gH6iJ7kL8mN9oP0qR1sT2uV3wX4
+  AWS:       AKIAIOSFODNN7EXAMPLE
+  Google:    AIzaSyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY
+  JWT:       eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkZlcm5hbmRvIn0.dyt0CoTl4WoVjAHI9Q_CwSKhl6d_9rhM3NrXuJttkao
+  Bearer:    Authorization: Bearer ZGVtby10b2tlbi1iYXplZmZmZmYzMjE0MQ
+  Slack hk:  https://hooks.slack.com/services/T00000000/B00000000/EXAMPLEEXAMPLEEXAMPLE
+  WS:        wss://stream.example.kennis.local:9443/socket?token=demo
+  JDBC:      jdbc:postgresql://db.example.kennis.local:5432/billing?user=svc&password=Tr0ub4dor
   apikey = "sk_test_FAKE_DO_NOT_USE_demo1234567890"
 
 -----BEGIN RSA PRIVATE KEY-----
